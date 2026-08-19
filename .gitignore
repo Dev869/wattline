@@ -1,0 +1,13 @@
+# Build outputs — `make` regenerates all of these
+DSI_SiUSBXp_3_1.DLL
+*.exe
+overlay_test
+Wattline.app/
+AppIcon.iconset/
+AppIcon.icns
+
+venv/
+__pycache__/
+*.pyc
+
+.DS_Store

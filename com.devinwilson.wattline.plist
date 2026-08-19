@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.devinwilson.wattline</string>
+
+	<!-- Must be the .app, not python directly: macOS only grants Bluetooth
+	     access to something with an application identity. Run the interpreter
+	     bare and CoreBluetooth never powers on, so scans hang forever. -->
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Applications/Wattline.app/Contents/MacOS/Wattline</string>
+	</array>
+
+	<key>WorkingDirectory</key>
+	<string>__DIR__</string>
+
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<false/>
+
+	<!-- Idle on a socket until GTA V connects, so this costs nothing to leave on. -->
+	<key>ProcessType</key>
+	<string>Background</string>
+
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/wattline.log</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/wattline.log</string>
+</dict>
+</plist>
