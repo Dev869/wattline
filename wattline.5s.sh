@@ -1,9 +1,9 @@
 #!/bin/bash
-# SwiftBar plugin: the entire interface for the bike bridge.
+# SwiftBar plugin: the same menu as the app, for anyone who lives in SwiftBar.
 # Installed to ~/.config/swiftbar by `make agent`.
 
 # <xbar.title>Wattline</xbar.title>
-# <xbar.desc>Trainer control, ERG workouts, Strava upload, and GTA V</xbar.desc>
+# <xbar.desc>Live bike numbers, ERG workouts and Strava upload</xbar.desc>
 
 ROOT="$HOME/wattline"
 LOG="$HOME/Library/Logs/wattline.log"
@@ -15,10 +15,10 @@ API="http://127.0.0.1:51235"
 # Every button is a one-line curl at the daemon.
 cmd() { echo "$1 | bash=/usr/bin/curl param1=-s param2=$API$2 terminal=false refresh=true"; }
 
-if ! pgrep -f "ant_stick.py" >/dev/null; then
+if ! pgrep -f "daemon.py" >/dev/null; then
   echo "🚲✗ | color=red"
   echo "---"
-  echo "Bridge is not running"
+  echo "Wattline is not running"
   echo "Start it | bash=/bin/launchctl param1=kickstart param2=gui/$UID/$AGENT terminal=false refresh=true"
   echo "Open log | bash=/usr/bin/open param1=$LOG terminal=false"
   exit 0
@@ -47,16 +47,11 @@ done
 cmd "--Release (no target)" "/power/off"
 
 echo "---"
-echo "Check my sensors | bash=/bin/bash param1=-lc param2=\"cd '$ROOT' && venv/bin/python bike_ble.py\" terminal=true"
-echo "Test with fake rider | bash=/bin/bash param1=-lc param2=\"cd '$ROOT' && make e2e\" terminal=true"
-echo "Back to normal | bash=/bin/bash param1=-lc param2=\"cd '$ROOT' && make agent\" terminal=false refresh=true"
-
-echo "---"
 if [ -f "$HOME/.config/wattline/strava.json" ]; then
   echo "Strava connected | color=gray"
 else
   echo "Connect Strava | bash=/bin/bash param1=-lc param2=\"cd '$ROOT' && venv/bin/python strava.py setup\" terminal=true"
 fi
 echo "Past rides | bash=/usr/bin/open param1=\"$RIDES\" terminal=false"
-echo "Restart bridge | bash=/bin/launchctl param1=kickstart param2=-k param3=gui/$UID/$AGENT terminal=false refresh=true"
+echo "Restart Wattline | bash=/bin/launchctl param1=kickstart param2=-k param3=gui/$UID/$AGENT terminal=false refresh=true"
 echo "Open log | bash=/usr/bin/open param1=$LOG terminal=false"

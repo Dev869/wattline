@@ -21,7 +21,8 @@
 	<key>KeepAlive</key>
 	<false/>
 
-	<!-- Idle on a socket until GTA V connects, so this costs nothing to leave on. -->
+	<!-- Scans for sensors the whole time it runs, so the trainer is found the
+	     moment you switch it on. Background priority keeps that cheap. -->
 	<key>ProcessType</key>
 	<string>Background</string>
 

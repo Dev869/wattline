@@ -214,7 +214,6 @@ class Plan:
                 # A free-ride block means "stop holding a target", not "0 W".
                 target = self.target
                 state.target_power = int(round(target)) if target > 0 else None
-                state.target_grade = None
             self._last = now
         state.target_power = None
         self.running = False

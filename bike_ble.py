@@ -1,8 +1,10 @@
 """Read real cycling data from BLE sensors on macOS (CoreBluetooth via bleak).
 
 Normalises CSC / Cycling Power / FTMS / Heart Rate into one BikeState.
-Event times are kept in 1/1024 s units, which is what ANT+ wants too, so they
-pass straight through to the ANT emulator with no conversion.
+Cadence and speed are kept the way the CSC characteristic reports them - a
+cumulative revolution count plus the time of the last event, in 1/1024 s - and
+turned into rpm and km/h by whoever is displaying them. Storing the raw pair
+means a dropped notification costs one sample, not a wrong number.
 
 Run directly to check your sensor:  python bike_ble.py
 """
@@ -25,6 +27,21 @@ HR_MEAS = "00002a37-0000-1000-8000-00805f9b34fb"
 
 WANTED = {CSC_SVC, CP_SVC, FTMS_SVC, HR_SVC}
 
+# What each advertised service means in words. A sensor is picked out of the
+# air by these long before we connect to it, so this is what we can honestly
+# say about something we have only heard advertise.
+SERVICE_NAMES = {
+    CSC_SVC: "speed + cadence",
+    CP_SVC: "power",
+    FTMS_SVC: "smart trainer",
+    HR_SVC: "heart rate",
+}
+
+# How long a device stays on the "seen nearby" list after its last advert.
+# Sensors advertise every second or two while awake, so anything quiet for
+# this long has gone back to sleep or left the room.
+NEARBY_TTL = 20.0
+
 
 class BikeState:
     """Latest sensor values. Written by BLE callbacks, read by whoever."""
@@ -39,13 +56,21 @@ class BikeState:
         self.speed_kph = 0.0  # only when a trainer reports it directly
         self.updated = 0.0  # monotonic time of last update
 
-        # Set by the game, sent down to the trainer. Grade is the one that
-        # matters: it turns Los Santos hills into real resistance.
-        self.target_grade = None  # percent, e.g. 4.5 for a 4.5% climb
-        self.target_crr = 0.004  # rolling resistance coefficient
-        self.target_power = None  # watts, when the game runs a workout instead
+        # Set by a workout, sent down to the trainer.
+        self.target_power = None  # watts to hold, or None to freewheel
         self.trainer_controllable = False
         self.sensors = {}  # name -> what it gives us, for the menu bar
+        # Everything the scan can currently hear, whether or not we have
+        # managed to connect to it: address -> {name, gives, seen}. The
+        # settings window lists this, so "searching" can show its working.
+        self.nearby = {}
+        self.ignored = set()  # addresses that turned out to have nothing to read
+
+    def nearby_now(self):
+        """The nearby list, freshest first, minus anything that has gone quiet."""
+        now = time.monotonic()
+        live = [d for d in self.nearby.values() if now - d["seen"] < NEARBY_TTL]
+        return sorted(live, key=lambda d: d["seen"], reverse=True)
 
     def touch(self):
         self.updated = time.monotonic()
@@ -115,8 +140,9 @@ def _handle_ftms(state, data):
 
 
 def _synth_crank(state, rpm):
-    """Trainers report cadence as rpm, not revolutions. ANT+ wants revolutions,
-    so integrate rpm into a rev counter and matching event time."""
+    """Trainers report cadence as rpm, where a cadence sensor reports revolutions.
+    Integrate the rpm into a rev counter and event time so both look the same
+    downstream."""
     now = time.monotonic()
     last = getattr(state, "_crank_synth_t", None)
     state._crank_synth_t = now
@@ -145,21 +171,33 @@ HANDLERS = {
 }
 
 
-async def find_sensors(timeout=15.0, name_hint=None):
+async def find_sensors(timeout=15.0, name_hint=None, nearby=None):
     """Return devices advertising a cycling service, or matching name_hint.
 
     Sensors sleep when the bike is still, so they only turn up if you spin the
-    cranks or wheel while this runs.
+    cranks or wheel while this runs. Reports each one into `nearby` the moment
+    it is heard rather than at the end of the sweep: a scan that shows nothing
+    for fifteen seconds is indistinguishable from a scan that is broken.
     """
     found = {}
-    devices = await BleakScanner.discover(timeout=timeout, return_adv=True)
-    for addr, (dev, adv) in devices.items():
-        uuids = {u.lower() for u in adv.service_uuids}
-        hit = bool(uuids & WANTED)
-        if name_hint and dev.name and name_hint.lower() in dev.name.lower():
-            hit = True
-        if hit:
-            found[addr] = dev
+
+    def heard(device, advert):
+        uuids = {u.lower() for u in advert.service_uuids}
+        gives = sorted(SERVICE_NAMES[u] for u in uuids & WANTED)
+        named = bool(name_hint and device.name and name_hint.lower() in device.name.lower())
+        if not gives and not named:
+            return
+        found[device.address] = device
+        if nearby is not None:
+            nearby[device.address] = {
+                "address": device.address,
+                "name": device.name or device.address,
+                "gives": gives,
+                "seen": time.monotonic(),
+            }
+
+    async with BleakScanner(detection_callback=heard):
+        await asyncio.sleep(timeout)
     return list(found.values())
 
 
@@ -179,7 +217,7 @@ async def _subscribe(client, state):
 
 
 async def _take_control(client, char, state):
-    """Claim the trainer's control point so we can set resistance.
+    """Claim the trainer's control point so we can set a power target.
 
     A trainer ignores every command until control is requested, and drops back
     to manual if nothing talks to it, so this has to happen on each connect.
@@ -191,32 +229,19 @@ async def _take_control(client, char, state):
 
 
 async def _control_loop(client, char, state):
-    """Push grade changes down to the trainer as the game sends them.
+    """Hold whatever wattage the workout is asking for.
 
     Only on change, and no faster than 4Hz: control points are slow, and
     hammering one with identical values makes trainers stutter.
     """
     last = object()
     while client.is_connected:
-        target = (state.target_power, state.target_grade, state.target_crr)
+        target = state.target_power
         if target != last:
             try:
-                if state.target_power is not None:
+                if target is not None:
                     await client.write_gatt_char(
-                        char, struct.pack("<Bh", 0x05, int(state.target_power)), response=True
-                    )
-                elif state.target_grade is not None:
-                    await client.write_gatt_char(
-                        char,
-                        struct.pack(
-                            "<BhhBB",
-                            0x11,  # set indoor bike simulation parameters
-                            0,  # wind speed, 0.001 m/s - the game models its own
-                            int(round(state.target_grade * 100)),  # 0.01 %
-                            int(round(state.target_crr / 0.0001)),
-                            int(round(0.51 / 0.01)),  # wind resistance coefficient
-                        ),
-                        response=True,
+                        char, struct.pack("<Bh", 0x05, int(target)), response=True
                     )
                 last = target
             except Exception:
@@ -229,10 +254,12 @@ async def run(state, name_hint=None, on_status=print):
     """Connect to sensors and keep them connected, feeding `state` forever."""
     # Bikes carry plenty of bluetooth that is not a sensor - Di2, lights, head
     # units. Once something proves it has nothing to offer, stop redialling it.
-    useless = set()
+    useless = state.ignored
     while True:
         devices = [
-            d for d in await find_sensors(name_hint=name_hint) if d.address not in useless
+            d
+            for d in await find_sensors(name_hint=name_hint, nearby=state.nearby)
+            if d.address not in useless
         ]
         if not devices:
             on_status("no cycling sensors advertising - spin the cranks and wait")

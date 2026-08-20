@@ -1,107 +1,387 @@
-// The settings and about window.
+// The settings window.
 //
-// Everything here writes straight to UserDefaults and then tells the overlay
-// to re-read, so there is no second copy of the state to drift out of sync.
-// Built in code rather than a xib because the app is compiled with a plain
-// swiftc invocation from the Makefile - no Xcode project, no nib loading.
+// Everything here writes straight to UserDefaults or the daemon's config and
+// then tells the overlay to re-read, so there is no second copy of the state
+// to drift out of sync. Built in code rather than a xib because the app is
+// compiled with a plain swiftc invocation from the Makefile - no Xcode
+// project, no nib loading.
+//
+// Two columns of grouped boxes rather than one long scroll: the settings fall
+// into small clusters that fit side by side, and a roughly square window is
+// easier to take in at a glance than a 500pt ribbon.
 
 import AppKit
 
 final class SettingsWindow: NSWindowController {
     private let overlay: Overlay
     private let onChange: () -> Void
-    private var fieldBoxes: [NSButton] = []
+    private weak var app: AppDelegate?
 
-    init(overlay: Overlay, onChange: @escaping () -> Void) {
+    private var fieldBoxes: [NSButton] = []
+    private let ftpField = NSTextField(string: "")
+    private let sensorLine = NSTextField(wrappingLabelWithString: "")
+    private let sensorList = NSStackView()
+    private let stravaLine = NSTextField(labelWithString: "")
+    private let stravaButton = NSButton(title: "", target: nil, action: nil)
+    private var poll: Timer?
+
+    private static let columnWidth: CGFloat = 300
+
+    init(overlay: Overlay, app: AppDelegate?, onChange: @escaping () -> Void) {
         self.overlay = overlay
+        self.app = app
         self.onChange = onChange
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 380, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 660, height: 560),
             styleMask: [.titled, .closable],
             backing: .buffered, defer: false)
         window.title = "\(Branding.name) Settings"
         window.isReleasedWhenClosed = false
         super.init(window: window)
 
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 18, left: 20, bottom: 18, right: 20)
-        stack.translatesAutoresizingMaskIntoConstraints = false
+        let columns = NSStackView(views: [column(left()), column(right())])
+        columns.orientation = .horizontal
+        columns.alignment = .top
+        columns.spacing = 20
 
-        stack.addArrangedSubview(header("Overlay"))
-        stack.addArrangedSubview(slider(
-            "Size", value: Double(overlay.scale), min: 0.6, max: 2.5,
-            format: { String(format: "%.0f%%", $0 * 100) },
-            apply: { [weak self] v in self?.overlay.setScale(CGFloat(v)) }))
-        stack.addArrangedSubview(slider(
-            "Opacity", value: overlay.opacity, min: 0.2, max: 1.0,
-            format: { String(format: "%.0f%%", $0 * 100) },
-            apply: { [weak self] v in self?.overlay.setOpacity(v) }))
+        let root = NSStackView(views: [columns, footer()])
+        root.orientation = .vertical
+        root.alignment = .leading
+        root.spacing = 14
+        root.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 18, right: 20)
+        root.translatesAutoresizingMaskIntoConstraints = false
 
-        stack.addArrangedSubview(toggle("Show workout graph", key: "overlayGraph", default: true))
-        stack.addArrangedSubview(toggle("Beep before each interval", key: "overlayBeep", default: true))
-        stack.addArrangedSubview(toggle("Dim when you stop pedalling", key: "overlayIdleDim", default: true))
-
-        stack.addArrangedSubview(spacer())
-        stack.addArrangedSubview(header("Show these numbers"))
-        let shown = Readout.savedFields()
-        for field in Readout.optionalFields {
-            let box = NSButton(checkboxWithTitle: label(for: field), target: self,
-                               action: #selector(fieldToggled))
-            box.identifier = NSUserInterfaceItemIdentifier(field)
-            box.state = shown.contains(field) ? .on : .off
-            fieldBoxes.append(box)
-            stack.addArrangedSubview(box)
-        }
-        stack.addArrangedSubview(note("Power is always shown. Speed and distance hide "
-                                      + "themselves during a workout, where they mean nothing."))
-
-        stack.addArrangedSubview(spacer())
-        stack.addArrangedSubview(header("Controls"))
-        stack.addArrangedSubview(note("Hold ⌥ to grab the overlay: drag it to move, "
-                                      + "or drag its bottom-right corner to resize.\n"
-                                      + "Without ⌥ held, clicks pass straight through to "
-                                      + "whatever is underneath."))
-
-        stack.addArrangedSubview(spacer())
-        stack.addArrangedSubview(note("\(Branding.name) \(Branding.version) — \(Branding.blurb)"))
-
-        window.contentView = stack
-        window.setContentSize(stack.fittingSize)
+        window.contentView = root
+        root.layoutSubtreeIfNeeded()
+        window.setContentSize(root.fittingSize)
         window.center()
+
+        refresh()
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    // MARK: the two columns
+
+    private func left() -> [NSView] {
+        [
+            box("Overlay", [
+                checkbox("Show the overlay", on: app?.overlayVisible ?? false,
+                         action: #selector(overlayVisibilityToggled)),
+                slider("Size", value: Double(overlay.scale), min: 0.6, max: 2.5,
+                       format: { String(format: "%.0f%%", $0 * 100) },
+                       apply: { [weak self] v in self?.overlay.setScale(CGFloat(v)) }),
+                slider("Opacity", value: overlay.opacity, min: 0.2, max: 1.0,
+                       format: { String(format: "%.0f%%", $0 * 100) },
+                       apply: { [weak self] v in self?.overlay.setOpacity(v) }),
+                toggle("Show the workout graph", key: "overlayGraph", default: true),
+                toggle("Dim when you stop pedalling", key: "overlayIdleDim", default: true),
+                note("Hold ⌥ to grab the overlay: drag to move, or drag its "
+                     + "bottom-right corner to resize. Without ⌥ held, clicks pass "
+                     + "straight through to whatever is underneath."),
+            ]),
+            box("Show these numbers", [
+                fieldGrid(),
+                note("Power is always shown. Speed and distance hide themselves "
+                     + "during a workout, where they mean nothing."),
+            ]),
+        ]
+    }
+
+    private func right() -> [NSView] {
+        ftpField.alignment = .right
+        ftpField.placeholderString = "250"
+        ftpField.target = self
+        ftpField.action = #selector(ftpEdited)
+        ftpField.widthAnchor.constraint(equalToConstant: 64).isActive = true
+
+        let ftpRow = NSStackView(views: [
+            NSTextField(labelWithString: "FTP"), ftpField,
+            NSTextField(labelWithString: "watts"),
+        ])
+        ftpRow.orientation = .horizontal
+        ftpRow.spacing = 8
+
+        sensorList.orientation = .vertical
+        sensorList.alignment = .leading
+        sensorList.spacing = 6
+        sensorLine.font = .systemFont(ofSize: 11)
+        sensorLine.textColor = .secondaryLabelColor
+        sensorLine.preferredMaxLayoutWidth = Self.columnWidth - 28
+        stravaLine.font = .systemFont(ofSize: 11)
+        stravaLine.textColor = .secondaryLabelColor
+        stravaButton.target = self
+        stravaButton.bezelStyle = .rounded
+
+        return [
+            box("Rider", [
+                ftpRow,
+                note("Workout files store power as a percentage of FTP, so the "
+                     + "same file is a different ride for every rider."),
+            ]),
+            box("Workouts", [
+                toggle("Beep before each interval", key: "overlayBeep", default: true),
+                note("Three beeps, one per second, and the overlay edge holds amber "
+                     + "for the last three seconds. The colour stays even with the "
+                     + "beep off, because then it is the only warning left."),
+            ]),
+            box("Sensors", [
+                sensorList,
+                sensorLine,
+            ]),
+            box("Rides", [
+                stravaLine,
+                row([stravaButton, button("Past rides", #selector(openRides))]),
+            ]),
+        ]
+    }
+
+    private func footer() -> NSView {
+        let about = NSTextField(labelWithString:
+            "\(Branding.name) \(Branding.version) — \(Branding.blurb)")
+        about.font = .systemFont(ofSize: 11)
+        about.textColor = .tertiaryLabelColor
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let bar = NSStackView(views: [about, spacer, button("Open log", #selector(openLog))])
+        bar.orientation = .horizontal
+        bar.alignment = .centerY
+        bar.spacing = 10
+        bar.widthAnchor.constraint(equalToConstant: Self.columnWidth * 2 + 20).isActive = true
+        return bar
+    }
+
+    // MARK: live values
+
+    /// Sensor and Strava state come from the daemon, so they can change while
+    /// the window is open. Poll only while it is actually on screen.
+    private func refresh() {
+        let live = liveStatus()
+        let nearby = live["nearby"] as? [[String: Any]] ?? []
+        let connected = live["sensors"] as? [String] ?? []
+
+        sensorList.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for device in nearby { sensorList.addArrangedSubview(sensorRow(device)) }
+        sensorList.isHidden = nearby.isEmpty
+
+        if nearby.isEmpty {
+            sensorLine.stringValue = "Nothing advertising yet. Sensors sleep when the bike "
+                + "is still — turn the trainer on and spin the cranks."
+        } else if connected.isEmpty {
+            sensorLine.stringValue = "Nothing to pair: \(Branding.name) takes the first "
+                + "cycling sensor that answers."
+        } else if live["erg"] as? Bool ?? false {
+            sensorLine.stringValue = "Reading live, and it takes power targets — a workout "
+                + "will set the resistance for you."
+        } else {
+            sensorLine.stringValue = "Reading live. This one does not take power targets, "
+                + "so a workout's numbers are yours to chase."
+        }
+
+        if stravaConfigured() {
+            stravaLine.stringValue = "Strava connected — rides upload when you stop."
+            stravaButton.title = "Reconnect Strava…"
+        } else {
+            stravaLine.stringValue = "Strava not connected — rides are saved locally only."
+            stravaButton.title = "Connect Strava…"
+        }
+        stravaButton.action = #selector(connectStrava)
+
+        // Someone may have used the menu's Set FTP… since this opened.
+        if ftpField.currentEditor() == nil {
+            ftpField.stringValue = String(currentFTP())
+        }
+
+        resizeToFit()
+    }
+
+    /// One device the scan can hear, connected or not.
+    private func sensorRow(_ device: [String: Any]) -> NSView {
+        let gives = (device["gives"] as? [String] ?? []).joined(separator: ", ")
+        let symbol: String, tint: NSColor, detail: String
+        switch device["state"] as? String {
+        case "connected":
+            symbol = "checkmark.circle.fill"
+            tint = .systemGreen
+            detail = gives.isEmpty ? "connected" : gives
+        case "ignored":
+            symbol = "minus.circle"
+            tint = .tertiaryLabelColor
+            detail = "nothing here we can read"
+        default:
+            symbol = "antenna.radiowaves.left.and.right"
+            tint = .secondaryLabelColor
+            detail = gives.isEmpty ? "connecting…" : "\(gives) — connecting…"
+        }
+
+        let icon = NSImageView()
+        icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        icon.contentTintColor = tint
+        icon.widthAnchor.constraint(equalToConstant: 16).isActive = true
+
+        let name = NSTextField(labelWithString: device["name"] as? String ?? "unnamed")
+        name.font = .systemFont(ofSize: 12)
+        name.lineBreakMode = .byTruncatingTail
+        let sub = NSTextField(labelWithString: detail)
+        sub.font = .systemFont(ofSize: 10)
+        sub.textColor = .secondaryLabelColor
+        sub.lineBreakMode = .byTruncatingTail
+
+        let text = NSStackView(views: [name, sub])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 1
+
+        let row = NSStackView(views: [icon, text])
+        row.orientation = .horizontal
+        row.alignment = .firstBaseline
+        row.spacing = 8
+        row.widthAnchor.constraint(equalToConstant: Self.columnWidth - 28).isActive = true
+        return row
+    }
+
+    /// The sensor list grows and shrinks as things come and go, so the window
+    /// has to follow it. Grow downwards - a settings window that walks up the
+    /// screen every time a sensor wakes up is worse than one that is too tall.
+    private func resizeToFit() {
+        guard let window, let root = window.contentView else { return }
+        let size = root.fittingSize
+        guard abs(size.height - root.frame.height) > 0.5 else { return }
+        let top = window.frame.maxY
+        window.setContentSize(size)
+        var frame = window.frame
+        frame.origin.y = top - frame.height
+        window.setFrame(frame, display: true)
+    }
+
+    override func showWindow(_ sender: Any?) {
+        super.showWindow(sender)
+        refresh()
+        poll?.invalidate()
+        poll = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            guard let self, self.window?.isVisible == true else { return }
+            self.refresh()
+        }
+    }
+
+    private func liveStatus() -> [String: Any] {
+        let path = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/wattline-status.json")
+        guard let data = try? Data(contentsOf: path),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return [:] }
+        return json
+    }
+
     // MARK: pieces
 
-    private func header(_ text: String) -> NSTextField {
-        let l = NSTextField(labelWithString: text)
-        l.font = .systemFont(ofSize: 12, weight: .semibold)
-        return l
+    /// A titled group: a small heading over a rounded card, the way System
+    /// Settings groups things. Hand-rolled rather than NSBox, which refuses to
+    /// take its height from the stack view inside it and collapses to a line.
+    private func box(_ title: String, _ contents: [NSView]) -> NSView {
+        let inner = NSStackView(views: contents)
+        inner.orientation = .vertical
+        inner.alignment = .leading
+        inner.spacing = 8
+        inner.translatesAutoresizingMaskIntoConstraints = false
+
+        let card = Card()
+        card.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(inner)
+        NSLayoutConstraint.activate([
+            inner.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            inner.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            inner.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
+            inner.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
+            card.widthAnchor.constraint(equalToConstant: Self.columnWidth),
+        ])
+
+        let heading = NSTextField(labelWithString: title)
+        heading.font = .systemFont(ofSize: 11, weight: .semibold)
+        heading.textColor = .secondaryLabelColor
+
+        let group = NSStackView(views: [heading, card])
+        group.orientation = .vertical
+        group.alignment = .leading
+        group.spacing = 6
+        return group
+    }
+
+    /// One column of groups. The trailing filler matters: the two columns are
+    /// never the same height, and without something willing to absorb the
+    /// difference the stack stretches the last group instead, leaving a card
+    /// with a lake of empty space in it.
+    private func column(_ boxes: [NSView]) -> NSStackView {
+        let filler = NSView()
+        filler.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
+
+        let stack = NSStackView(views: boxes + [filler])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.distribution = .fill
+        stack.spacing = 14
+        return stack
+    }
+
+    private func row(_ views: [NSView]) -> NSStackView {
+        let stack = NSStackView(views: views)
+        stack.orientation = .horizontal
+        stack.spacing = 8
+        return stack
+    }
+
+    /// The six optional numbers, two to a line: six stacked checkboxes made the
+    /// column twice as tall as anything next to it.
+    private func fieldGrid() -> NSView {
+        let shown = Readout.savedFields()
+        var rows: [NSView] = []
+        var pair: [NSView] = []
+        for field in Readout.optionalFields {
+            let checkbox = NSButton(checkboxWithTitle: label(for: field), target: self,
+                                    action: #selector(fieldToggled))
+            checkbox.identifier = NSUserInterfaceItemIdentifier(field)
+            checkbox.state = shown.contains(field) ? .on : .off
+            checkbox.widthAnchor.constraint(equalToConstant: 130).isActive = true
+            fieldBoxes.append(checkbox)
+            pair.append(checkbox)
+            if pair.count == 2 { rows.append(row(pair)); pair = [] }
+        }
+        if !pair.isEmpty { rows.append(row(pair)) }
+
+        let grid = NSStackView(views: rows)
+        grid.orientation = .vertical
+        grid.alignment = .leading
+        grid.spacing = 6
+        return grid
     }
 
     private func note(_ text: String) -> NSTextField {
-        let l = NSTextField(wrappingLabelWithString: text)
-        l.font = .systemFont(ofSize: 11)
-        l.textColor = .secondaryLabelColor
-        l.preferredMaxLayoutWidth = 330
-        return l
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = .systemFont(ofSize: 11)
+        label.textColor = .secondaryLabelColor
+        label.preferredMaxLayoutWidth = Self.columnWidth - 28
+        return label
     }
 
-    private func spacer() -> NSView {
-        let v = NSView()
-        v.heightAnchor.constraint(equalToConstant: 6).isActive = true
-        return v
+    private func button(_ title: String, _ selector: Selector) -> NSButton {
+        let control = NSButton(title: title, target: self, action: selector)
+        control.bezelStyle = .rounded
+        return control
+    }
+
+    private func checkbox(_ title: String, on: Bool, action: Selector) -> NSButton {
+        let box = NSButton(checkboxWithTitle: title, target: self, action: action)
+        box.state = on ? .on : .off
+        return box
     }
 
     private func toggle(_ title: String, key: String, default def: Bool) -> NSButton {
-        let box = NSButton(checkboxWithTitle: title, target: self, action: #selector(prefToggled))
+        let box = checkbox(title, on: UserDefaults.standard.object(forKey: key) as? Bool ?? def,
+                           action: #selector(prefToggled))
         box.identifier = NSUserInterfaceItemIdentifier(key)
-        box.state = (UserDefaults.standard.object(forKey: key) as? Bool ?? def) ? .on : .off
         return box
     }
 
@@ -110,28 +390,23 @@ final class SettingsWindow: NSWindowController {
     private func slider(_ title: String, value: Double, min: Double, max: Double,
                         format: @escaping (Double) -> String,
                         apply: @escaping (Double) -> Void) -> NSView {
-        let row = NSStackView()
-        row.orientation = .horizontal
-        row.spacing = 8
-
         let name = NSTextField(labelWithString: title)
-        name.widthAnchor.constraint(equalToConstant: 56).isActive = true
+        name.widthAnchor.constraint(equalToConstant: 52).isActive = true
+
         let readout = NSTextField(labelWithString: format(value))
         readout.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         readout.textColor = .secondaryLabelColor
-        readout.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        readout.alignment = .right
+        readout.widthAnchor.constraint(equalToConstant: 40).isActive = true
 
         let control = Slider(minValue: min, maxValue: max) { v in
             readout.stringValue = format(v)
             apply(v)
         }
         control.doubleValue = value
-        control.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        control.widthAnchor.constraint(equalToConstant: 160).isActive = true
 
-        row.addArrangedSubview(name)
-        row.addArrangedSubview(control)
-        row.addArrangedSubview(readout)
-        return row
+        return row([name, control, readout])
     }
 
     // MARK: actions
@@ -151,6 +426,22 @@ final class SettingsWindow: NSWindowController {
         onChange()
     }
 
+    @objc private func overlayVisibilityToggled(_ sender: NSButton) {
+        app?.setOverlay(visible: sender.state == .on)
+    }
+
+    @objc private func ftpEdited() {
+        guard let watts = Int(ftpField.stringValue), watts >= 50, watts <= 600 else {
+            ftpField.stringValue = String(currentFTP())
+            return
+        }
+        app?.call("/ftp/\(watts)")
+    }
+
+    @objc private func connectStrava() { app?.connectStrava() }
+    @objc private func openRides() { app?.openRides() }
+    @objc private func openLog() { app?.openLog() }
+
     private func label(for field: String) -> String {
         switch field {
         case "cadence": return "Cadence"
@@ -158,9 +449,47 @@ final class SettingsWindow: NSWindowController {
         case "speed": return "Speed"
         case "distance": return "Distance"
         case "elapsed": return "Elapsed time"
-        case "grade": return "Gradient"
         default: return field
         }
+    }
+}
+
+/// The daemon owns FTP - it lives in the same config file the workout parser
+/// reads - so both the menu and the settings window ask this rather than
+/// keeping a second copy in UserDefaults.
+func currentFTP() -> Int {
+    let path = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".config/wattline/config.json")
+    guard let data = try? Data(contentsOf: path),
+          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let ftp = json["ftp"] as? NSNumber
+    else { return 200 }
+    return ftp.intValue
+}
+
+func stravaConfigured() -> Bool {
+    let path = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".config/wattline/strava.json")
+    return FileManager.default.fileExists(atPath: path.path)
+}
+
+/// The rounded well behind each group. A layer-backed view rather than a
+/// colour baked in once, so it follows the system between light and dark.
+private final class Card: NSView {
+    override var wantsUpdateLayer: Bool { true }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func updateLayer() {
+        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        layer?.borderColor = NSColor.separatorColor.cgColor
+        layer?.borderWidth = 1
+        layer?.cornerRadius = 10
     }
 }
 
