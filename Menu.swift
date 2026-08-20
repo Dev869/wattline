@@ -16,7 +16,8 @@ let logFile = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent("Library/Logs/wattline.log")
 let ridesDir = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent("Documents/Wattline Rides")
-let api = "http://127.0.0.1:51235"
+let controlPort: UInt16 = 51235
+let api = "http://127.0.0.1:\(controlPort)"
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var item: NSStatusItem!
@@ -57,12 +58,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refresh()
     }
 
-    /// The daemon may already be up from the login agent; only start our own if not.
+    /// Start the daemon unless one is genuinely already listening.
+    ///
+    /// The wait is not paranoia. Relaunching means the outgoing app is killed,
+    /// its daemon notices a moment later and exits, and in that gap the port
+    /// still answers - so checking once and giving up leaves us adopting a
+    /// process that is on its way out, and no daemon at all. On a cold start
+    /// nothing is listening and this returns immediately.
     func startDaemonIfNeeded() {
-        if portInUse(51234) { return }
+        var waited = 0.0
+        while waited < 2.0, portInUse(controlPort) {
+            Thread.sleep(forTimeInterval: 0.1)
+            waited += 0.1
+        }
+        if portInUse(controlPort) { return }
         let task = Process()
         task.executableURL = root.appendingPathComponent("venv/bin/python")
-        task.arguments = [root.appendingPathComponent("ant_stick.py").path]
+        task.arguments = [root.appendingPathComponent("daemon.py").path]
         task.currentDirectoryURL = root
         if let handle = try? FileHandle(forWritingTo: logFile) {
             handle.seekToEndOfFile()
@@ -138,9 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.setSubmenu(powerMenu, for: powerItem)
 
         menu.addItem(.separator())
-        let strava = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/wattline/strava.json")
-        if !FileManager.default.fileExists(atPath: strava.path) {
+        if !stravaConfigured() {
             menu.addItem(action("Connect Strava…", #selector(connectStrava)))
         }
         // Workout controls only appear when there is a workout to control.
@@ -165,7 +175,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(graphItem)
         menu.addItem(action("Set FTP…", #selector(setFTP)))
         menu.addItem(action("Settings…", #selector(openSettings)))
-        menu.addItem(action("Check my sensors…", #selector(checkSensors)))
         menu.addItem(action("Past rides", #selector(openRides)))
         menu.addItem(action("Open log", #selector(openLog)))
         menu.addItem(.separator())
@@ -209,16 +218,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return json
     }
 
-    @objc func toggleOverlay() {
-        overlayVisible.toggle()
-        UserDefaults.standard.set(overlayVisible, forKey: "overlayVisible")
-        overlayVisible ? overlay.show() : overlay.hide()
+    @objc func toggleOverlay() { setOverlay(visible: !overlayVisible) }
+
+    func setOverlay(visible: Bool) {
+        overlayVisible = visible
+        UserDefaults.standard.set(visible, forKey: "overlayVisible")
+        visible ? overlay.show() : overlay.hide()
         refresh()
     }
 
     @objc func openSettings() {
         if settings == nil {
-            settings = SettingsWindow(overlay: overlay) { [weak self] in self?.refresh() }
+            settings = SettingsWindow(overlay: overlay, app: self) { [weak self] in self?.refresh() }
         }
         NSApp.activate(ignoringOtherApps: true)
         settings?.showWindow(nil)
@@ -258,7 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.messageText = "Functional Threshold Power"
         alert.informativeText = "Workout files store power as a percentage of FTP."
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 80, height: 24))
-        field.stringValue = "250"
+        field.stringValue = String(currentFTP())
         alert.accessoryView = field
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
@@ -294,10 +305,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func connectStrava() {
         runInTerminal("cd '\(root.path)' && venv/bin/python strava.py setup")
-    }
-
-    @objc func checkSensors() {
-        runInTerminal("cd '\(root.path)' && venv/bin/python bike_ble.py")
     }
 
     @objc func quit() {

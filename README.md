@@ -1,20 +1,15 @@
 # Wattline
 
 Your bike's numbers, floating over whatever you are watching. On macOS, from
-Bluetooth sensors, with no ANT+ dongle.
+Bluetooth sensors, with nothing to pair and nothing to plug in.
 
-Two halves that work independently:
+An always-on-top readout of power, cadence, heart rate and speed that sits over
+Netflix, YouTube, a game, anything, including fullscreen video. Load a `.zwo`
+workout and it counts you into each interval, holding the wattage on the trainer
+for you. Stop the ride and it goes to Strava.
 
-- **The overlay** — an always-on-top readout of power, cadence, heart rate and
-  speed that sits over Netflix, YouTube, a game, anything, including fullscreen
-  video. Load a `.zwo` workout and it counts you into each interval.
-- **The bridge** — makes those same sensors work inside
-  [GT Bike V](https://www.gtbikev.com), the GTA V cycling mod, which cannot see
-  Bluetooth from inside CrossOver.
-
-Ride with just the overlay if you have no interest in GTA V. Nothing about the
-overlay needs the game, and it does not care what trainer app, if any, you are
-also running.
+It does not care what else you are running. Ride along to a film, or to another
+trainer app entirely — Wattline reads the same sensors and stays out of the way.
 
     ┌──────────────────────────────────┐
     │  180 W        95 rpm   142 bpm   │   ← floats over anything
@@ -32,13 +27,18 @@ Netflix through the middle of it.
 resize. Let go of ⌥ and it goes back to being scenery. That gesture is the whole
 interface; there is no chrome to hunt for and no window to accidentally focus.
 
-Everything else lives in **Settings…** in the menu bar:
+Everything else lives in **Settings…** in the menu bar, two columns of grouped
+cards rather than a list you scroll:
 
-- Size and opacity sliders (also under `Overlay size` / `Overlay opacity`)
-- Which numbers to show: cadence, heart rate, speed, distance, elapsed, grade.
+- **Overlay** — show/hide, size and opacity sliders, workout graph, dim-when-idle
+- **Show these numbers** — cadence, heart rate, speed, distance, elapsed.
   Power is always shown. Speed and distance hide themselves during a workout,
   where they mean nothing.
-- Workout graph on/off, interval beep on/off, dim-when-idle on/off
+- **Rider** — your FTP, the one number every workout file is measured against
+- **Workouts** — the interval beep
+- **Sensors** — every cycling device in earshot, live: what it offers and
+  whether it is connected
+- **Rides** — whether Strava is hooked up, and a way into the saved `.tcx` files
 
 It dims to 35% when you stop pedalling and comes back the moment you start, so
 it is not a bright rectangle burning into your show during a rest.
@@ -49,7 +49,7 @@ Load any Zwift `.zwo` file: menu > `Load workout…`. Set your FTP first
 (`Set FTP…`) — the file stores percentages, not watts.
 
 While a workout runs the overlay shows the target, the time left in the block,
-and what is coming next. If the trainer supports FTMS target power, the bridge
+and what is coming next. If the trainer supports FTMS target power, Wattline
 holds the wattage for you; otherwise the number is a target to chase.
 
 **Before each interval you get a 3-2-1 countdown**: three beeps, one per second,
@@ -64,59 +64,39 @@ power zone, with a fixed "now" line the blocks scroll through. It sits behind
 the numbers rather than beside them, so turning it on does not make the overlay
 any bigger. Toggle it in Settings, or `Show/Hide graph` in the menu.
 
-## Why the bridge exists
-
-GT Bike V reads bike sensors two ways, and both are dead inside CrossOver:
-
-- `BLE_Receiver.dll` uses WinRT `BluetoothLEDevice`. Wine has no Bluetooth
-  stack on macOS, so it finds nothing.
-- `ANT_Receiver.dll` drives a USB stick through `DSI_SiUSBXp_3_1.DLL` (SiLabs)
-  or `libusb0.dll`, enumerating `USB\VID_0FCF&PID_10*`. CrossOver has no USB
-  driver stack, so buying a dongle probably would not have helped either.
-
-Your Mac, meanwhile, talks to the sensors perfectly over CoreBluetooth. So the
-bridge reads them natively and hands the data to the game as a **fake ANT+
-stick**: a drop-in `DSI_SiUSBXp_3_1.DLL` that answers "yes, one stick here" and
-pipes its serial stream over TCP to a Python emulator speaking the ANT message
-protocol.
-
-    bike sensor --BLE--> macOS (bike_ble.py) --> ant_stick.py
-                                                     |
-                                                 TCP 51234
-                                                     |
-    GTA V / GT Bike V <-- ANT_Receiver.dll <-- DSI_SiUSBXp_3_1.DLL (shim)
-
 ## Install
 
     make agent
 
 That is the whole setup, once, and the only command you ever have to type. It
-builds everything, installs `Wattline.app`, starts the bridge, sets it to run at
-login, and installs the fake dongle into the CrossOver bottle if you have one.
+builds everything, installs `Wattline.app`, starts it, and sets it to run at
+login.
 
 **macOS will ask whether Wattline can use Bluetooth. Say yes.** Bluetooth access
 is granted per application identity, and if you decline it there is no second
 prompt and no error — scanning simply hangs forever and finds nothing. If you
 already said no, undo it in System Settings > Privacy & Security > Bluetooth.
 
-Then turn the trainer on and ride. For GTA V, pair inside GT Bike V as if you
-had an ANT+ stick: the bridge appears as a smart trainer (device 1117) plus
-speed+cadence (1121), speed (1123), cadence (1122), power (1111) and heart rate
-(1120), depending on what your sensors actually report.
+Then turn the trainer on and ride. There is nothing to pair: Wattline scans the
+whole time it is running and connects to the first cycling sensor that answers,
+so switching the trainer on is the entire ritual. Until something answers the
+menu says `Searching for sensors…`, and the Sensors group in Settings lists
+every cycling device it can hear as it hears it — name, what each one offers,
+and whether it is connected — so a scan that is finding nothing looks different
+from a scan that is broken. If you have two bikes in the room, start the daemon
+with `--name` and part of the name you want (`--name Suito`).
 
-Requires macOS 13+, Python 3.10+, and a Bluetooth trainer or sensor. The GTA V
-half additionally needs CrossOver and GT Bike V; nothing about the overlay does.
+Requires macOS 13+, Python 3.10+, and a Bluetooth trainer, power meter, cadence
+sensor or heart rate strap. Any mixture of those; it reads whatever answers.
 
 ## The menu bar is the interface
 
-Everything lives under the 🚲 in the menu bar. GTA V is optional — the trainer
-side works on its own:
+Everything lives under the 🚲 in the menu bar:
 
-    🚲 212 W · 31.4 km/h · 148 bpm · +6.5% grade
+    🚲 212 W · 31.4 km/h · 148 bpm
     ● Recording  24 min · 208W avg · 12.4 km
     Holding 200W
-    Elite Suito: 2ad2, 2ad9 (control) · hills on
-    Game connected
+    Elite Suito: 2ad2, 2ad9 (control) · holds a target
     Stop ride and upload to Strava
     Hold a power target  >  100..300 W, or release
     Load workout…           - any Zwift .zwo file
@@ -125,8 +105,7 @@ side works on its own:
     Overlay opacity         >  40 .. 100%
     Hide graph
     Set FTP…                - workouts are percentages, so this has to be right
-    Settings…               - fields, toggles, sliders, and what ⌥ does
-    Check my sensors…       - live read-out, says whether hills will work
+    Settings…               - toggles, sliders, FTP, and what the scan can hear
     Past rides
     Open log
     Quit
@@ -134,7 +113,7 @@ side works on its own:
 With a workout loaded, `Load workout…` is replaced by `Pause workout`,
 `Skip this block` and `Stop workout`.
 
-Red 🚲 means the bridge died. Everything is one click.
+Red 🚲 means the daemon died. Everything is one click.
 
 ## ERG workouts and Strava
 
@@ -163,24 +142,22 @@ The buttons are plain HTTP against the daemon, so they work from a terminal too:
 
 ## What it does when you are not riding
 
-Nothing. The bridge sits on a socket and only starts scanning Bluetooth when
-GTA V connects, then stops again 90 seconds after you quit. A permanent BLE
-scan would drain the battery for no reason.
+Listens. It scans for sensors the whole time it is running, so switching the
+trainer on is all it takes — a sensor nobody is looking for is a sensor that
+will never be found. Quit from the menu and the scan stops with it.
 
-    make status           # same thing from the terminal
+    make status           # is it up, is it listening, last few log lines
 
 ## Checks
 
-    make test             # bridge behaves like an ANT+ stick (no game, no sensor)
+    make test             # scans on its own, and reports what it hears
     make test-overlay     # drives the real menu bar, asserts against the screen
-    make check-bottle     # Windows code inside the bottle reaches the bridge
     venv/bin/python plan.py       # .zwo parsing and zone maths
     venv/bin/python bike_ble.py   # live read-out of your actual sensors
 
-`make check-bottle` needs the bridge running. `make fake` runs it in the
-foreground with a simulated rider (180W, 90rpm, 142bpm, 30kph), useful for
-testing without a bike — stop the agent first (`make agent-off`) so the port is
-free.
+`make fake` runs the daemon in the foreground with a simulated rider (180W,
+90rpm, 142bpm, 30kph), useful for working on the overlay without a bike — stop
+the agent first (`make agent-off`) so the port is free.
 
 `make test-overlay` takes about three minutes and needs Accessibility and Screen
 Recording permission for whatever terminal runs it. It drives the menus for
@@ -197,43 +174,12 @@ hangs forever with no error. `Wattline.app` is a two-line wrapper that
 exists only to give TCC something to grant. If macOS ever asks whether
 Wattline can use Bluetooth, say yes.
 
-## If the game still finds no sensor
-
-The shim logs every call to `C:\ant_shim.log` inside the bottle. Launch the
-game, then read it:
-
-    cat "$HOME/Library/Application Support/CrossOver/Bottles/Steam-2/drive_c/ant_shim.log"
-
-- **File is empty or missing**: GT Bike V never loaded the shim, so it went for
-  `libusb0.dll` instead. Same trick works there, it is just a different set of
-  exports to fake.
-- **`SI_GetNumDevices -> 0`**: the bridge was not running when the game started.
-- **Calls stop after `SI_Open`**: the ANT library wants something the emulator
-  answers wrongly. The bytes it sent are in the `ant_stick.py` output.
-
-## Hills
-
-The bridge works both ways. GT Bike V sends the slope of whatever road you are
-riding as an ANT+ FE-C track resistance page; the bridge decodes it and writes
-it to the trainer as an FTMS indoor bike simulation command, so Los Santos
-terrain becomes real resistance.
-
-    game: "this road is +6.5%"  --FE-C-->  bridge  --FTMS-->  trainer brakes
-
-ERG workouts come across too: a target power page becomes an FTMS target power
-write. `TrainerDifficulty` in `GTBikeVConfig.ini` scales how much of each climb
-gets sent, 0 to 100.
-
-Grade changes are pushed at most four times a second and only when the value
-moves, because control points are slow and trainers stutter if you hammer them.
-
 ## Not done
 
-- **Power meters.** Broadcast, but untested against a real one. If the bike
-  only reports speed, set `PowerCurve` in `GTBikeVConfig.ini` so the mod
-  estimates watts from speed.
+- **Power meters.** Read, but untested against a real one.
 - **Trainers that are not FTMS.** Older Wahoo and Tacx units use proprietary
-  BLE control. Data would still flow up; resistance would not come back down.
+  BLE control. Their numbers would still be read; a workout could not set the
+  resistance, so the target would be yours to chase.
 - **Unsigned builds.** There is no Developer ID signature, so the first launch
   needs right-click > Open, or `xattr -d com.apple.quarantine`.
 - **One display at a time.** The overlay handles multiple displays fine; the
@@ -255,10 +201,9 @@ no test framework here and there does not need to be one.
 MIT — see [LICENSE](LICENSE).
 
 Not affiliated with, endorsed by, or connected to any of the following, all of
-which belong to their respective owners: GT Bike V, Rockstar Games, Zwift,
-Strava, Wahoo, Elite, Tacx, Garmin, ANT+, CodeWeavers/CrossOver. This project
-interoperates with GT Bike V and reads Zwift's `.zwo` file format; it contains
-no code from either.
+which belong to their respective owners: Zwift, Strava, Wahoo, Elite, Tacx,
+Garmin. This project reads Zwift's `.zwo` file format; it contains no code from
+Zwift.
 
 "Wattline" is not a registered trademark of this project. A German energy
 company trades under a similar name in an unrelated field.

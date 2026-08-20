@@ -22,7 +22,7 @@ final class Readout: NSView {
 
     /// Which optional fields the settings window says to show. Power is not in
     /// here: a readout with no power is not a readout.
-    static let optionalFields = ["cadence", "hr", "speed", "distance", "elapsed", "grade"]
+    static let optionalFields = ["cadence", "hr", "speed", "distance", "elapsed"]
     private var fields = Readout.savedFields()
 
     static func savedFields() -> Set<String> {
@@ -179,9 +179,6 @@ final class Readout: NSView {
         } else {
             if let speed = s["speed"] as? Double, speed > 0, fields.contains("speed") {
                 parts.append(String(format: "%.1f km/h", speed))
-            }
-            if let grade = s["grade"] as? Double, fields.contains("grade") {
-                parts.append(String(format: "%+.1f%%", grade))
             }
             if recording {
                 if let distance = s["distance"] as? Int, distance > 0, fields.contains("distance") {

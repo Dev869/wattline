@@ -129,7 +129,7 @@ EOF
 # choose, whether or not a real ride is running. Only touches the display file
 # the menu reads, never the recording itself.
 write_status() {  # power cadence
-  printf '{"power": %s, "cadence": %s, "hr": 0, "speed": 0.0, "grade": null, "target_power": 180, "recording": true, "elapsed": 60, "avg_power": 0, "distance": 0, "sensors": [], "hills": false, "game": false}' "$1" "$2" > "$STATUS"
+  printf '{"power": %s, "cadence": %s, "hr": 0, "speed": 0.0, "target_power": 180, "recording": true, "elapsed": 60, "avg_power": 0, "distance": 0, "sensors": [], "erg": false}' "$1" "$2" > "$STATUS"
 }
 
 hold_status() {  # power cadence seconds
