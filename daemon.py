@@ -15,6 +15,7 @@ import json
 import os
 import time
 
+import ant_relay
 import bike_ble
 import plan
 import strava
@@ -253,6 +254,8 @@ async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fake", action="store_true", help="simulate a rider instead of using BLE")
     ap.add_argument("--name", default=None, help="sensor name hint, e.g. Madone")
+    ap.add_argument("--ant-relay-lan", action="store_true",
+                    help="accept ANT+ relay packets from the network, not just this machine")
     args = ap.parse_args()
 
     def log(*parts):
@@ -265,6 +268,10 @@ async def main():
     else:
         log("scanning for sensors - spin the cranks to wake them")
         asyncio.create_task(bike_ble.run(state, name_hint=args.name, on_status=log))
+
+    # No Mac can hear ANT+ itself, so take it from whatever can. Costs nothing
+    # when no relay is running.
+    await ant_relay.listen(state, lan=args.ant_relay_lan, log=log)
 
     live = {"plan": None}
     ride = workout.Ride(state)

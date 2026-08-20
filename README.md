@@ -89,6 +89,28 @@ with `--name` and part of the name you want (`--name Suito`).
 Requires macOS 13+, Python 3.10+, and a Bluetooth trainer, power meter, cadence
 sensor or heart rate strap. Any mixture of those; it reads whatever answers.
 
+## ANT+
+
+No Mac can receive ANT+ — the built-in radio does Bluetooth, Wi-Fi and Thread,
+and its firmware is closed. Most sensors made since about 2016 broadcast both
+ANT+ and Bluetooth, so check Settings first; if yours is listed there, none of
+this matters.
+
+For genuinely ANT+-only kit, something else can be the aerial. Put a dongle in
+a Raspberry Pi or any non-Mac machine and run the relay:
+
+    pip install openant
+    relay/wattline-relay.py --host <your-mac>.local
+
+then start Wattline with `--ant-relay-lan` so it will listen to that machine.
+Relayed sensors appear in the Sensors list beside the Bluetooth ones. The wire
+format is nine bytes a packet, so writing a relay for some other aerial is
+short work. `relay/wattline-relay.py --fake` sends a simulated rider if you
+want to see the path working before buying anything.
+
+[docs/ant-without-a-stick.md](docs/ant-without-a-stick.md) has the full
+reasoning, what was ruled out, and what to try if you want to go further.
+
 ## The menu bar is the interface
 
 Everything lives under the 🚲 in the menu bar:
