@@ -74,6 +74,11 @@ async def main():
         ["power", "smart trainer"],
     )
     ok &= check("the strap is a heart rate monitor", state.nearby["BB"]["gives"], ["heart rate"])
+    ok &= check(
+        "the trainer offers three numbers to choose from",
+        state.nearby["AA"]["can"],
+        ["cadence", "power", "speed"],
+    )
     ok &= check("both are listed as nearby", len(state.nearby_now()), 2)
 
     # A sensor that has gone back to sleep stops being "nearby".

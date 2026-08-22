@@ -36,8 +36,9 @@ cards rather than a list you scroll:
   where they mean nothing.
 - **Rider** — your FTP, the one number every workout file is measured against
 - **Workouts** — the interval beep
-- **Sensors** — every cycling device in earshot, live: what it offers and
-  whether it is connected
+- **Sensors** — every cycling device in earshot, live: what it offers, whether
+  it is connected, and a row of icons per device to pick which numbers come
+  from it
 - **Rides** — whether Strava is hooked up, and a way into the saved `.tcx` files
 
 It dims to 35% when you stop pedalling and comes back the moment you start, so
@@ -78,12 +79,20 @@ prompt and no error — scanning simply hangs forever and finds nothing. If you
 already said no, undo it in System Settings > Privacy & Security > Bluetooth.
 
 Then turn the trainer on and ride. There is nothing to pair: Wattline scans the
-whole time it is running and connects to the first cycling sensor that answers,
-so switching the trainer on is the entire ritual. Until something answers the
+whole time it is running and connects to every cycling sensor that answers, so
+switching the trainer on is the entire ritual. Until something answers the
 menu says `Searching for sensors…`, and the Sensors group in Settings lists
 every cycling device it can hear as it hears it — name, what each one offers,
 and whether it is connected — so a scan that is finding nothing looks different
-from a scan that is broken. If you have two bikes in the room, start the daemon
+from a scan that is broken.
+
+When two sensors offer the same number — a trainer and a power meter both
+reporting watts, or a trainer's estimated cadence against a real cadence sensor
+— click the icon on the sensor you want it from. ⚡ power, ↻ cadence, speed,
+♥ heart rate: lit means that number is coming from that device, and clicking a
+lit one hands the number back to whatever offers it. The choice lives in
+`~/.config/wattline/config.json` and takes effect on the next pedal stroke, not
+the next reconnect. If you have two bikes in the room, start the daemon
 with `--name` and part of the name you want (`--name Suito`).
 
 Requires macOS 13+, Python 3.10+, and a Bluetooth trainer, power meter, cadence

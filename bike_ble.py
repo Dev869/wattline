@@ -37,10 +37,26 @@ SERVICE_NAMES = {
     HR_SVC: "heart rate",
 }
 
+# The same services, as the numbers they actually feed. SERVICE_NAMES is what
+# we tell the rider; this is what the code checks when they pick which sensor a
+# number should come from.
+METRICS = ("power", "cadence", "speed", "hr")
+SERVICE_METRICS = {
+    CSC_SVC: ("speed", "cadence"),
+    CP_SVC: ("power",),
+    FTMS_SVC: ("power", "cadence", "speed"),
+    HR_SVC: ("hr",),
+}
+
 # How long a device stays on the "seen nearby" list after its last advert.
 # Sensors advertise every second or two while awake, so anything quiet for
 # this long has gone back to sleep or left the room.
 NEARBY_TTL = 20.0
+
+# How long to leave a sensor alone after a connection to it ended. Without it,
+# a device that is advertising but refusing connections gets redialled on every
+# advert - once a second, forever.
+RETRY_DELAY = 3.0
 
 
 class BikeState:
@@ -59,7 +75,15 @@ class BikeState:
         # Set by a workout, sent down to the trainer.
         self.target_power = None  # watts to hold, or None to freewheel
         self.trainer_controllable = False
-        self.sensors = {}  # name -> what it gives us, for the menu bar
+        # address -> {"name", "gives"} for everything we are connected to.
+        # Keyed by address, not name: two straps of the same model share a
+        # name, and a device that advertises before its name arrives would
+        # otherwise never match itself once connected.
+        self.sensors = {}
+        # Which device each number is taken from: metric -> address. A metric
+        # nobody has claimed is read from whatever offers it, which is what
+        # happens on a bike with a trainer and nothing else.
+        self.sources = {}
         # Everything the scan can currently hear, whether or not we have
         # managed to connect to it: address -> {name, gives, seen}. The
         # settings window lists this, so "searching" can show its working.
@@ -71,6 +95,10 @@ class BikeState:
         now = time.monotonic()
         live = [d for d in self.nearby.values() if now - d["seen"] < NEARBY_TTL]
         return sorted(live, key=lambda d: d["seen"], reverse=True)
+
+    def allowed(self, address):
+        """The metrics this device is allowed to write, given the rider's picks."""
+        return {m for m in METRICS if self.sources.get(m) in (None, address)}
 
     def touch(self):
         self.updated = time.monotonic()
@@ -88,20 +116,25 @@ class BikeState:
         )
 
 
-def _handle_csc(state, data):
+def _handle_csc(state, data, allow):
     flags = data[0]
     i = 1
     if flags & 0x01:
-        state.wheel_revs, state.wheel_time = struct.unpack_from("<IH", data, i)
+        revs, when = struct.unpack_from("<IH", data, i)
+        if "speed" in allow:
+            state.wheel_revs, state.wheel_time = revs, when
         i += 6
     if flags & 0x02:
-        state.crank_revs, state.crank_time = struct.unpack_from("<HH", data, i)
+        revs, when = struct.unpack_from("<HH", data, i)
+        if "cadence" in allow:
+            state.crank_revs, state.crank_time = revs, when
     state.touch()
 
 
-def _handle_cp(state, data):
+def _handle_cp(state, data, allow):
     flags, power = struct.unpack_from("<Hh", data, 0)
-    state.power = max(0, power)
+    if "power" in allow:
+        state.power = max(0, power)
     i = 4
     if flags & 0x01:  # pedal power balance
         i += 1
@@ -109,24 +142,30 @@ def _handle_cp(state, data):
         i += 2
     if flags & 0x10:  # wheel revolution data (uint32 revs + uint16 time @1/2048s)
         revs, t2048 = struct.unpack_from("<IH", data, i)
-        state.wheel_revs, state.wheel_time = revs, (t2048 // 2) & 0xFFFF
+        if "speed" in allow:
+            state.wheel_revs, state.wheel_time = revs, (t2048 // 2) & 0xFFFF
         i += 6
     if flags & 0x20:  # crank revolution data
-        state.crank_revs, state.crank_time = struct.unpack_from("<HH", data, i)
+        revs, when = struct.unpack_from("<HH", data, i)
+        if "cadence" in allow:
+            state.crank_revs, state.crank_time = revs, when
     state.touch()
 
 
-def _handle_ftms(state, data):
+def _handle_ftms(state, data, allow):
     flags = struct.unpack_from("<H", data, 0)[0]
     i = 2
     if not flags & 0x01:  # bit clear => instantaneous speed present
-        state.speed_kph = struct.unpack_from("<H", data, i)[0] / 100.0
+        kph = struct.unpack_from("<H", data, i)[0] / 100.0
+        if "speed" in allow:
+            state.speed_kph = kph
         i += 2
     if flags & 0x02:  # average speed
         i += 2
     if flags & 0x04:  # instantaneous cadence, 0.5 rpm units
         rpm = struct.unpack_from("<H", data, i)[0] / 2.0
-        _synth_crank(state, rpm)
+        if "cadence" in allow:
+            _synth_crank(state, rpm)
         i += 2
     if flags & 0x08:
         i += 2
@@ -135,7 +174,9 @@ def _handle_ftms(state, data):
     if flags & 0x20:  # resistance level
         i += 2
     if flags & 0x40:  # instantaneous power
-        state.power = max(0, struct.unpack_from("<h", data, i)[0])
+        watts = max(0, struct.unpack_from("<h", data, i)[0])
+        if "power" in allow:
+            state.power = watts
     state.touch()
 
 
@@ -157,9 +198,10 @@ def _synth_crank(state, rpm):
         state.crank_time = int(now * 1024) & 0xFFFF
 
 
-def _handle_hr(state, data):
+def _handle_hr(state, data, allow):
     flags = data[0]
-    state.hr = struct.unpack_from("<H", data, 1)[0] if flags & 0x01 else data[1]
+    if "hr" in allow:
+        state.hr = struct.unpack_from("<H", data, 1)[0] if flags & 0x01 else data[1]
     state.touch()
 
 
@@ -169,6 +211,28 @@ HANDLERS = {
     FTMS_BIKE: _handle_ftms,
     HR_MEAS: _handle_hr,
 }
+
+
+def _describe(device, advert, name_hint=None):
+    """What we can honestly say about something we have only heard advertise.
+
+    None for anything that is not a cycling sensor - bikes carry plenty of
+    bluetooth that is not one.
+    """
+    uuids = {u.lower() for u in advert.service_uuids}
+    gives = sorted(SERVICE_NAMES[u] for u in uuids & WANTED)
+    named = bool(name_hint and device.name and name_hint.lower() in device.name.lower())
+    if not gives and not named:
+        return None
+    return {
+        "address": device.address,
+        "name": device.name or device.address,
+        "gives": gives,
+        # The numbers it could feed, so the settings window can offer them as
+        # a choice before we have connected to anything.
+        "can": sorted({m for u in uuids & WANTED for m in SERVICE_METRICS[u]}),
+        "seen": time.monotonic(),
+    }
 
 
 async def find_sensors(timeout=15.0, name_hint=None, nearby=None):
@@ -182,33 +246,33 @@ async def find_sensors(timeout=15.0, name_hint=None, nearby=None):
     found = {}
 
     def heard(device, advert):
-        uuids = {u.lower() for u in advert.service_uuids}
-        gives = sorted(SERVICE_NAMES[u] for u in uuids & WANTED)
-        named = bool(name_hint and device.name and name_hint.lower() in device.name.lower())
-        if not gives and not named:
+        info = _describe(device, advert, name_hint)
+        if info is None:
             return
         found[device.address] = device
         if nearby is not None:
-            nearby[device.address] = {
-                "address": device.address,
-                "name": device.name or device.address,
-                "gives": gives,
-                "seen": time.monotonic(),
-            }
+            nearby[device.address] = info
 
     async with BleakScanner(detection_callback=heard):
         await asyncio.sleep(timeout)
     return list(found.values())
 
 
-async def _subscribe(client, state):
-    """Subscribe to every cycling characteristic this device happens to have."""
+async def _subscribe(client, state, address):
+    """Subscribe to every cycling characteristic this device happens to have.
+
+    The rider's pick is read per notification rather than per connection, so
+    moving cadence from the trainer to a cadence sensor takes effect on the
+    next pedal stroke instead of the next reconnect.
+    """
     subscribed = []
     for svc in client.services:
         for ch in svc.characteristics:
             fn = HANDLERS.get(ch.uuid.lower())
             if fn and "notify" in ch.properties:
-                await client.start_notify(ch, lambda _s, d, f=fn: f(state, d))
+                await client.start_notify(
+                    ch, lambda _s, d, f=fn: f(state, d, state.allowed(address))
+                )
                 subscribed.append(ch.uuid[4:8])
             elif ch.uuid.lower() == FTMS_CONTROL:
                 await _take_control(client, ch, state)
@@ -251,43 +315,60 @@ async def _control_loop(client, char, state):
 
 
 async def run(state, name_hint=None, on_status=print):
-    """Connect to sensors and keep them connected, feeding `state` forever."""
-    # Bikes carry plenty of bluetooth that is not a sensor - Di2, lights, head
-    # units. Once something proves it has nothing to offer, stop redialling it.
-    useless = state.ignored
-    while True:
-        devices = [
-            d
-            for d in await find_sensors(name_hint=name_hint, nearby=state.nearby)
-            if d.address not in useless
-        ]
-        if not devices:
-            on_status("no cycling sensors advertising - spin the cranks and wait")
-            continue
-        await asyncio.gather(
-            *(_hold(d, state, on_status, useless) for d in devices),
-            return_exceptions=True,
+    """Connect to sensors and keep them connected, feeding `state` forever.
+
+    The scan never stops. It used to sweep, connect, and then go quiet for as
+    long as anything stayed connected, which meant a strap put on mid-ride was
+    never heard, and the trainer we were happily reading aged off the "nearby"
+    list twenty seconds after it connected - the one device we were most sure
+    of was the one that vanished from the settings window.
+    """
+    # Once something proves it has nothing to offer - Di2, lights, head units -
+    # stop redialling it.
+    held = {}
+    loop = asyncio.get_running_loop()
+
+    def heard(device, advert):
+        info = _describe(device, advert, name_hint)
+        if info is None:
+            return
+        state.nearby[device.address] = info
+        if device.address in held or device.address in state.ignored:
+            return
+        task = asyncio.create_task(_hold(device, state, on_status, state.ignored))
+        held[device.address] = task
+        task.add_done_callback(
+            lambda _t, a=device.address: loop.call_later(RETRY_DELAY, held.pop, a, None)
         )
+
+    async with BleakScanner(detection_callback=heard):
+        await asyncio.Event().wait()
 
 
 async def _hold(device, state, on_status, useless=None):
+    address = device.address
     try:
         async with BleakClient(device) as client:
-            subs = await _subscribe(client, state)
+            subs = await _subscribe(client, state, address)
             if not subs:
                 offered = ", ".join(sorted(s.uuid[4:8] for s in client.services))
                 on_status(f"{device.name}: not a cycling sensor (services: {offered})")
                 if useless is not None:
-                    useless.add(device.address)
+                    useless.add(address)
                 return
             on_status(f"{device.name}: connected, reading {', '.join(subs)}")
-            name = device.name or device.address
-            state.sensors[name] = subs
+            state.sensors[address] = {"name": device.name or address, "gives": subs}
             try:
                 while client.is_connected:
+                    # Some sensors stop advertising once something connects to
+                    # them. Being connected is better evidence of being nearby
+                    # than an advert is, so say so.
+                    entry = state.nearby.get(address)
+                    if entry:
+                        entry["seen"] = time.monotonic()
                     await asyncio.sleep(1.0)
             finally:
-                state.sensors.pop(name, None)
+                state.sensors.pop(address, None)
     except Exception as exc:  # sensor slept, moved out of range, etc
         on_status(f"{device.name or device.address}: {exc}")
     on_status(f"{device.name or device.address}: disconnected")

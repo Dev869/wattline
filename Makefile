@@ -59,10 +59,12 @@ status:
 		&& echo "	daemon listening on 51235" || echo "	daemon NOT listening"
 	@tail -n 3 "$(HOME)/Library/Logs/wattline.log" 2>/dev/null
 
-# Does it scan on its own, and does it report what it hears?
+# Does it scan on its own, report what it hears, and read only the sensors
+# that were picked for each number?
 test: venv
 	$(PYTHON) test_scan_default.py
 	$(PYTHON) test_nearby.py
+	$(PYTHON) test_sources.py
 
 # Does the overlay behave on screen? Drives the real menu and asserts against
 # what the window server renders. Needs Accessibility and Screen Recording

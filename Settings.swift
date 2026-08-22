@@ -25,7 +25,24 @@ final class SettingsWindow: NSWindowController {
     private let stravaButton = NSButton(title: "", target: nil, action: nil)
     private var poll: Timer?
 
+    /// Which sensor supplies each number, as the daemon last reported it. A
+    /// metric missing from this is taken from whatever offers it.
+    private var sources: [String: String] = [:]
+    /// Picks made here that the daemon has not written back yet. Without this
+    /// the icon springs back to its old state for the second between clicking
+    /// it and the daemon rewriting its status file.
+    private var pending: [String: String] = [:]
+
     private static let columnWidth: CGFloat = 300
+
+    /// The numbers a sensor can supply, in the order they are shown, with the
+    /// symbol and the word for each.
+    private static let metrics = [
+        (key: "power", symbol: "bolt.fill", word: "power"),
+        (key: "cadence", symbol: "arrow.triangle.2.circlepath", word: "cadence"),
+        (key: "speed", symbol: "speedometer", word: "speed"),
+        (key: "hr", symbol: "heart.fill", word: "heart rate"),
+    ]
 
     init(overlay: Overlay, app: AppDelegate?, onChange: @escaping () -> Void) {
         self.overlay = overlay
@@ -163,6 +180,16 @@ final class SettingsWindow: NSWindowController {
         let nearby = live["nearby"] as? [[String: Any]] ?? []
         let connected = live["sensors"] as? [String] ?? []
 
+        var picked = live["sources"] as? [String: String] ?? [:]
+        for (metric, want) in pending {
+            if (picked[metric] ?? "any") == want {
+                pending[metric] = nil          // the daemon agrees; stop overriding
+            } else {
+                picked[metric] = want == "any" ? nil : want
+            }
+        }
+        sources = picked
+
         sensorList.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for device in nearby { sensorList.addArrangedSubview(sensorRow(device)) }
         sensorList.isHidden = nearby.isEmpty
@@ -171,14 +198,16 @@ final class SettingsWindow: NSWindowController {
             sensorLine.stringValue = "Nothing advertising yet. Sensors sleep when the bike "
                 + "is still — turn the trainer on and spin the cranks."
         } else if connected.isEmpty {
-            sensorLine.stringValue = "Nothing to pair: \(Branding.name) takes the first "
-                + "cycling sensor that answers."
+            sensorLine.stringValue = "Nothing to pair: \(Branding.name) connects to every "
+                + "cycling sensor it hears."
         } else if live["erg"] as? Bool ?? false {
             sensorLine.stringValue = "Reading live, and it takes power targets — a workout "
-                + "will set the resistance for you."
+                + "will set the resistance for you. Click an icon to choose which sensor a "
+                + "number comes from."
         } else {
             sensorLine.stringValue = "Reading live. This one does not take power targets, "
-                + "so a workout's numbers are yours to chase."
+                + "so a workout's numbers are yours to chase. Click an icon to choose which "
+                + "sensor a number comes from."
         }
 
         if stravaConfigured() {
@@ -198,15 +227,22 @@ final class SettingsWindow: NSWindowController {
         resizeToFit()
     }
 
-    /// One device the scan can hear, connected or not.
+    /// One device the scan can hear, connected or not: what it is, what we are
+    /// taking from it, and a row of icons to change that.
     private func sensorRow(_ device: [String: Any]) -> NSView {
         let gives = (device["gives"] as? [String] ?? []).joined(separator: ", ")
+        let address = device["address"] as? String ?? ""
+        let can = device["can"] as? [String] ?? []
+        let taking = Self.metrics.filter { can.contains($0.key) && supplies(address, $0.key) }
+
         let symbol: String, tint: NSColor, detail: String
         switch device["state"] as? String {
         case "connected":
             symbol = "checkmark.circle.fill"
             tint = .systemGreen
-            detail = gives.isEmpty ? "connected" : gives
+            detail = taking.isEmpty
+                ? (gives.isEmpty ? "connected" : "connected — nothing taken from it")
+                : "taking " + taking.map(\.word).joined(separator: ", ")
         case "ignored":
             symbol = "minus.circle"
             tint = .tertiaryLabelColor
@@ -240,7 +276,45 @@ final class SettingsWindow: NSWindowController {
         row.alignment = .firstBaseline
         row.spacing = 8
         row.widthAnchor.constraint(equalToConstant: Self.columnWidth - 28).isActive = true
-        return row
+
+        guard !can.isEmpty, device["state"] as? String != "ignored" else { return row }
+
+        let picks = NSStackView(views: Self.metrics.filter { can.contains($0.key) }
+            .map { metricButton($0, address: address) })
+        picks.orientation = .horizontal
+        picks.spacing = 10
+        picks.edgeInsets = NSEdgeInsets(top: 0, left: 24, bottom: 0, right: 0)
+
+        let stack = NSStackView(views: [row, picks])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 3
+        return stack
+    }
+
+    /// Is this device the one that number comes from? A number nobody has
+    /// claimed is read from whatever offers it, so every sensor that has it
+    /// shows as supplying it - which is the truth.
+    private func supplies(_ address: String, _ metric: String) -> Bool {
+        sources[metric] == nil || sources[metric] == address
+    }
+
+    /// One number this sensor could supply: lit when it does, grey when
+    /// something else was picked for it.
+    private func metricButton(_ metric: (key: String, symbol: String, word: String),
+                              address: String) -> NSButton {
+        let on = supplies(address, metric.key)
+        let image = NSImage(systemSymbolName: metric.symbol, accessibilityDescription: metric.word)
+        let button = NSButton(image: image ?? NSImage(), target: self,
+                              action: #selector(sourceToggled))
+        button.isBordered = false
+        button.imagePosition = .imageOnly
+        button.contentTintColor = on ? .controlAccentColor : .tertiaryLabelColor
+        button.identifier = NSUserInterfaceItemIdentifier("\(metric.key)|\(address)")
+        button.toolTip = on
+            ? "Taking \(metric.word) from this sensor — click to take it from any sensor"
+            : "Take \(metric.word) from this sensor instead"
+        return button
     }
 
     /// The sensor list grows and shrinks as things come and go, so the window
@@ -424,6 +498,20 @@ final class SettingsWindow: NSWindowController {
         UserDefaults.standard.set(on, forKey: "overlayFields")
         overlay.reloadPreferences()
         onChange()
+    }
+
+    /// Clicking the sensor a number already comes from hands it back to
+    /// whatever offers it; clicking any other pins the number to that one.
+    @objc private func sourceToggled(_ sender: NSButton) {
+        let bits = (sender.identifier?.rawValue ?? "").split(separator: "|", maxSplits: 1)
+        guard bits.count == 2 else { return }
+        let metric = String(bits[0]), address = String(bits[1])
+        let want = sources[metric] == address ? "any" : address
+        pending[metric] = want
+        sources[metric] = want == "any" ? nil : want
+        let escaped = want.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? want
+        app?.call("/source/\(metric)/\(escaped)")
+        refresh()
     }
 
     @objc private func overlayVisibilityToggled(_ sender: NSButton) {

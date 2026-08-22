@@ -33,18 +33,46 @@ def ftp():
         return 200.0
 
 
-def set_ftp(watts):
-    os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
-    data = {}
+def _config():
     try:
         with open(CONFIG) as fh:
-            data = json.load(fh)
+            return json.load(fh)
     except (OSError, ValueError):
-        pass
-    data["ftp"] = int(watts)
+        return {}
+
+
+def _save(key, value):
+    os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
+    data = _config()
+    data[key] = value
     with open(CONFIG, "w") as fh:
         json.dump(data, fh)
-    return data["ftp"]
+    return value
+
+
+def set_ftp(watts):
+    return _save("ftp", int(watts))
+
+
+def sources():
+    """Which sensor each number is taken from: metric -> address.
+
+    A metric nobody has picked is missing from the dict, which means "whatever
+    offers it" - the right answer for a bike with one trainer on it.
+    """
+    picked = _config().get("sources") or {}
+    return {k: v for k, v in picked.items() if isinstance(v, str) and v}
+
+
+def set_source(metric, address):
+    """Pick the sensor a number comes from, or None to take it from anything."""
+    picked = sources()
+    if address:
+        picked[metric] = address
+    else:
+        picked.pop(metric, None)
+    _save("sources", picked)
+    return picked
 
 
 def zone_of(watts, ftp_watts):

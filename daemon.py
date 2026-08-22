@@ -84,6 +84,19 @@ async def control_server(state, ride, log, live):
                 current.stop(state); live["plan"] = None; return "stopped"
             return "unknown workout command"
 
+        if parts[:1] == ["source"]:
+            # /source/<metric>/<address>, or /source/<metric>/any to go back to
+            # taking that number from whatever offers it.
+            from urllib.parse import unquote
+
+            metric = parts[1]
+            who = unquote(parts[2]) if len(parts) > 2 else "any"
+            if metric not in bike_ble.METRICS:
+                return f"unknown metric {metric}"
+            state.sources = plan.set_source(metric, None if who == "any" else who)
+            log(f"source: {metric} from {who}")
+            return f"{metric} from {who}"
+
         if parts[:1] == ["ftp"]:
             return f"ftp {plan.set_ftp(int(parts[1]))}"
 
@@ -177,9 +190,9 @@ async def status_loop(state, live, ride=None):
             lines.append(f"Holding {state.target_power:.0f}W")
 
         if state.sensors:
-            for name, gives in state.sensors.items():
+            for sensor in state.sensors.values():
                 erg = " · holds a target" if state.trainer_controllable else ""
-                lines.append(f"{name}: {', '.join(gives)}{erg}")
+                lines.append(f"{sensor['name']}: {', '.join(sensor['gives'])}{erg}")
         else:
             lines.append("Searching for sensors…")
             lines.append("Turn the trainer on and pedal | color=gray")
@@ -199,14 +212,17 @@ async def status_loop(state, live, ride=None):
                         "elapsed": round(ride.elapsed) if recording else 0,
                         "avg_power": round(ride.avg_power) if recording else 0,
                         "distance": round(ride.distance) if recording else 0,
-                        "sensors": list(state.sensors),
+                        "sensors": [s["name"] for s in state.sensors.values()],
+                        "sources": state.sources,
                         "nearby": [
                             {
+                                "address": d["address"],
                                 "name": d["name"],
                                 "gives": d["gives"],
+                                "can": d.get("can", []),
                                 "state": (
                                     "connected"
-                                    if d["name"] in state.sensors
+                                    if d["address"] in state.sensors
                                     else "ignored"
                                     if d["address"] in state.ignored
                                     else "found"
@@ -259,6 +275,7 @@ async def main():
         print(time.strftime("%H:%M:%S"), *parts, flush=True)
 
     state = bike_ble.BikeState()
+    state.sources = plan.sources()
     if args.fake:
         asyncio.create_task(fake_rider(state))
         log("using a simulated rider (90rpm, 30kph, 180W)")
